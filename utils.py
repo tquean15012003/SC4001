@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, Tuple
 from torchvision import transforms
 from torchvision.datasets import Flowers102
+from sklearn.neighbors import KNeighborsClassifier
 from torch.utils.data import DataLoader, random_split
 from torchvision.datasets.vision import VisionDataset
 from typing import Any, Callable, Optional, Tuple, Union
-from sklearn.metrics.pairwise import pairwise_distances
 from torchvision.datasets.utils import (
     check_integrity,
     download_and_extract_archive,
@@ -274,7 +274,9 @@ def train_and_evaluate_triple(
             positive_embeddings = model(positives)
             negative_embeddings = model(negatives)
 
-            loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+            loss = criterion(
+                anchor_embeddings, positive_embeddings, negative_embeddings
+            )
             loss.backward()
             optimizer.step()
 
@@ -352,15 +354,16 @@ def get_embeddings_and_labels(model, test_loader):
     labels = torch.cat(labels).to(device)
     return embeddings, labels
 
+def test_model_triplet(embeddings_train, labels_train, embeddings_test, labels_test):
+    knn = KNeighborsClassifier(n_neighbors=1)
+    knn.fit(embeddings_train, labels_train)
 
-def test_model_triplet(embeddings, labels):
-    distances = pairwise_distances(embeddings, embeddings, metric="euclidean")
-    np.fill_diagonal(distances, np.inf)
-    nearest_neighbors = np.argmin(distances, axis=1)
-    correct = labels[nearest_neighbors] == labels
-    test_accuracy = correct.sum() / correct.size
-    print(f"Test Accuracy: {test_accuracy:.4f}")
-    return test_accuracy
+    # Predict and calculate accuracy
+    predictions = knn.predict(embeddings_test)
+    accuracy = np.mean(predictions == labels_test)
+
+    print(f"Test Accuracy: {accuracy:.4f}")
+    return accuracy
 
 
 def plot_figure(
