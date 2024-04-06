@@ -243,7 +243,7 @@ class Flowers102Classifier(nn.Module):
             self.eval()
             train_loss, train_acc = self.evaluate(train_val_loader, accuracy, epoch, "Train")
             training_run.train_loss.append(train_loss)
-            training_run.train_acc.append(train_acc)
+            training_run.train_accuracy.append(train_acc)
             # end with
 
             # Evaluate accuracy on the val dataset.
