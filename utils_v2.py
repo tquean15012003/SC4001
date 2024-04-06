@@ -237,10 +237,7 @@ class Flowers102Classifier(nn.Module):
         best_val_accuracy = self.get_metrics("val")['accuracy']
         for epoch in range(1, epochs + 1):
             self.train()
-            train_loss, train_acc = self.train_one_epoch(train_loader, optimizer, epoch)
-
-            training_run.train_loss.append(train_loss)
-            training_run.train_accuracy.append(train_acc)
+            self.train_one_epoch(train_loader, optimizer, epoch)
 
             # Evaluate accuracy on the train dataset.
             self.eval()
