@@ -2,50 +2,67 @@
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-
+import torchvision.transforms.v2 as v2
+import numpy as np
 
 from enum import Enum
-from torchvision import transforms, models
+from torchvision import models
 from torchvision.datasets import Flowers102
 from torch.utils.data import DataLoader, random_split
 
     
 
 # Define transforms for data augmentation and normalization
-data_transforms = transforms.Compose(
+data_transforms_train = v2.Compose(
     [
-        transforms.Resize((224, 224)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        v2.PILToTensor(),
+        v2.RandomResizedCrop(size=(224, 224), antialias=True),
+        v2.RandomHorizontalFlip(p=0.5),
+        v2.ToDtype(torch.float32, scale=True),  # to float32 in [0, 1]
+        v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),  # typically from ImageNe
+    ]    
+)
+
+data_transforms_test = v2.Compose(
+    [
+        v2.PILToTensor(),
+        v2.CenterCrop(size=(224, 224)),
+        v2.ToDtype(torch.float32, scale=True),  # to float32 in [0, 1]
+        v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),  # typically from ImageNet
     ]
 )
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+cutmix = v2.CutMix(num_classes=102)
+mixup = v2.MixUp(num_classes=102)
+cutmix_or_mixup = v2.RandomChoice([cutmix, mixup])
 
-def get_train_val_test_loader():
+def collate_fn(batch):
+    return cutmix_or_mixup(*torch.utils.data.default_collate(batch))
+
+
+def get_train_val_test_loader(mixup: bool = False):
     train_dataset = Flowers102(
-        root="./data", split="train", download=True, transform=data_transforms
+        root="./data", split="train", download=True, transform=data_transforms_train
+    )
+    val_dataset = Flowers102(
+        root="./data", split="val", download=True, transform=data_transforms_train
     )
     test_dataset = Flowers102(
-        root="./data", split="test", download=True, transform=data_transforms
+        root="./data", split="test", download=True, transform=data_transforms_test
     )
-    # Split train_dataset into training and validation datasets
-    train_size = int(0.8 * len(train_dataset))
-    validation_size = len(train_dataset) - train_size
-    train_dataset, validation_dataset = random_split(
-        train_dataset, [train_size, validation_size]
-    )
-    print(f"TRAINING SIZE: {len(train_dataset)}")
-    print(f"VALIDATION SIZE: {len(validation_dataset)}")
-    print(f"TRAINING SIZE: {len(test_dataset)}")
-
+    
     # Create DataLoader instances for each dataset
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    validation_loader = DataLoader(validation_dataset, batch_size=32)
+    if mixup:
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=collate_fn)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    train_val_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    validation_loader = DataLoader(val_dataset, batch_size=32, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=32)
-    return train_loader, validation_loader, test_loader
+    return train_loader, train_val_loader, validation_loader, test_loader
 
 class FineTuneType(Enum):
     """An Enum to indicate which layers we want to train.
@@ -56,6 +73,23 @@ class FineTuneType(Enum):
     CLASSIFIER = 2
     "Train all the layers (fine-tuning)."
     ALL = 3
+
+class EarlyStopper:
+    def __init__(self, patience=3, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = np.inf
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
 
 backbones = ["resnet18", "resnet50", "resnet152"]
 class Flowers102Classifier(nn.Module):
@@ -146,6 +180,7 @@ class Flowers102Classifier(nn.Module):
             loss = criterion(outputs, targets)
 
             running_loss, num_batches = running_loss + loss.item(), num_batches + 1
+
             loss.backward()
             optimizer.step()
         # end for
@@ -183,6 +218,7 @@ class Flowers102Classifier(nn.Module):
     def train_multiple_epochs_and_save_best_checkpoint(
         self,
         train_loader,
+        train_val_loader,
         val_loader,
         accuracy,
         optimizer,
@@ -197,16 +233,19 @@ class Flowers102Classifier(nn.Module):
         
         After every epoch, we also save the train/val loss and accuracy.
         """
+        es = EarlyStopper()
         best_val_accuracy = self.get_metrics("val")['accuracy']
         for epoch in range(1, epochs + 1):
             self.train()
-            self.train_one_epoch(train_loader, optimizer, epoch)
+            train_loss, train_acc = self.train_one_epoch(train_loader, optimizer, epoch)
+
+            training_run.train_loss.append(train_loss)
+            training_run.train_accuracy.append(train_acc)
 
             # Evaluate accuracy on the train dataset.
             self.eval()
-            train_loss, train_acc = self.evaluate(train_loader, accuracy, epoch, "Train")
+            train_loss, train_acc = self.evaluate(train_val_loader, accuracy, epoch, "Train")
             training_run.train_loss.append(train_loss)
-            training_run.train_accuracy.append(train_acc)
             # end with
 
             # Evaluate accuracy on the val dataset.
@@ -221,9 +260,11 @@ class Flowers102Classifier(nn.Module):
                 self.update_metrics("val", val_loss, val_acc)
                 torch.save(self.state_dict(), filename)
                 best_val_accuracy = val_acc
-            # end with
             
             scheduler.step()
+            if es.early_stop(val_loss):
+              print(f"Early stopping at ${epoch}")
+              break
         # end for (epoch)
     # end def
 
