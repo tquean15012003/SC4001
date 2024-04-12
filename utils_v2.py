@@ -8,7 +8,7 @@ import numpy as np
 from enum import Enum
 from torchvision import models
 from torchvision.datasets import Flowers102
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
     
 
