@@ -261,7 +261,7 @@ class Flowers102Classifier(nn.Module):
             
             scheduler.step()
             if es.early_stop(val_loss):
-              print(f"Early stopping at ${epoch}")
+              print(f"Early stopping at epoch {epoch}")
               break
         # end for (epoch)
     # end def
